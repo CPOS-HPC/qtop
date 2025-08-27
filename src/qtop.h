@@ -96,6 +96,12 @@ typedef enum {
     JOB_FINISHED  = 'F'
 } job_state_t;
 
+typedef enum {
+    QTOP_MODE_JOBS,
+    QTOP_MODE_DETAIL,
+    QTOP_MODE_SUMMARY
+} qtop_mode_t;
+
 typedef struct {
     unsigned int id;
     char *name;

@@ -632,7 +632,7 @@ void print_server_stats(const server_t *pbs, WINDOW *win)
     wrefresh(win);
 }
 
-static bool format_time(unsigned int secs, char buf[9])
+static bool format_time(unsigned int secs, char buf[16])
 {
     int hh, mm, ss;
     
@@ -643,8 +643,12 @@ static bool format_time(unsigned int secs, char buf[9])
     if (hh <= 99) {
         sprintf(buf, "%02d:%02d:%02d", hh, mm, ss);
         return true;
+    } else
+    if (hh <= 999) {
+        sprintf(buf, "%03dh:%02dm", hh, mm);
+        return true;
     } else {
-        sprintf(buf, "**:%02d:%02d", mm, ss);
+        sprintf(buf, "%dh", hh);
         return false;
     }
 }
@@ -764,7 +768,7 @@ void print_jobs(const job_t *jobs, int njobs, WINDOW *win, int selpos,
             }
         }
 
-        char timebuf[9];
+        char timebuf[16];
         format_time(walltime, timebuf);
 
         int cattrs = COLOR_PAIR(cpair);
@@ -838,6 +842,188 @@ void print_jobs(const job_t *jobs, int njobs, WINDOW *win, int selpos,
     }
 
     wrefresh(win);
+}
+
+static int print_jobs_summary(const job_t *jobs, int njobs,
+    WINDOW *win, int selpos)
+{
+    int i, nj;
+    const double gb_scale = pow(2, 20);
+
+    wattron(win, COLOR_PAIR(COLOR_PAIR_JHEADER) | A_REVERSE);
+
+    const char *header =
+        "    User     Queue    S    Jobs      Mem   %Mem      NC   %CPU   Walltime    I/O";
+
+    mvwprintw(win, HEADER_NROWS - 1, 0, "%-*s", COLS, header);
+
+    wattroff(win, COLOR_PAIR(COLOR_PAIR_JHEADER) | A_REVERSE);
+
+    const job_t *job = jobs;
+    const char *current_user = NULL;
+    job_state_t current_state;
+    const char *current_queue;
+
+    // stats to collect
+    double mem_sum = 0.0, mem_r_sum = 0.0, io_sum = 0.0;
+    long cput_sum = 0, walltime_sum = 0;
+    int ncpus_sum = 0, njobs_sum = 0;
+    long nwalltime_sum = 0;
+
+    i = HEADER_NROWS;
+    nj = 0;
+    while (nj <= njobs && i < LINES) {
+        double mem, mem_r, io;
+        long cput, walltime;
+        int ncpus;
+        double cpuutil = 0, memutil = 0;
+        char linebuf[1024];
+        bool pre_state;
+
+        if (current_user == NULL) {
+            current_user  = job->user;
+            current_state = job->state;
+            current_queue = job->queue;
+        }
+
+        switch (job->state) {
+        case JOB_RUNNING:
+        case JOB_EXITING:
+        case JOB_FINISHED:
+        case JOB_SUSPENDED:
+            mem         = job->mem_u;
+            cput        = job->cput_u;
+            walltime    = job->walltime_u;
+            ncpus       = job->ncpus_u;
+            break;
+        default:
+            mem         = job->mem_r;
+            cput        = job->cput_r;
+            walltime    = job->walltime_r;
+            ncpus       = job->ncpus_r;
+            break;
+        }
+
+        switch (current_state) {
+        case JOB_RUNNING:
+        case JOB_EXITING:
+        case JOB_FINISHED:
+        case JOB_SUSPENDED:
+            pre_state   = false;
+            break;
+        default:
+            pre_state   = true;
+            break;
+        }
+
+        mem_r = job->mem_r;
+        io    = job->io_r;
+
+        if (strcmp(job->user, current_user)   ||
+            job->state != current_state       ||
+            strcmp(job->queue, current_queue) ||
+            nj == njobs) {
+            // print the accumulated stats
+            if (!pre_state) {
+                if (walltime_sum > 0) {
+                    cpuutil = ((double) cput_sum)/nwalltime_sum;
+                }
+                if (mem_r_sum > 0) {
+                    memutil = mem_sum/mem_r_sum;
+                }
+            } else {
+                cpuutil = 0.0;
+                memutil = 0.0;
+            }
+
+            char timebuf[16];
+            format_time(walltime_sum, timebuf);
+
+            int cpair = 0;
+            switch (current_state) {
+            case JOB_RUNNING:
+                cpair = COLOR_PAIR_JOB_R;
+                break;
+            case JOB_QUEUED:
+                cpair = COLOR_PAIR_JOB_Q;
+                break;
+            case JOB_WAITING:
+                cpair = COLOR_PAIR_JOB_W;
+                break;
+            case JOB_HELD:
+                cpair = COLOR_PAIR_JOB_H;
+                break;
+            case JOB_SUSPENDED:
+                cpair = COLOR_PAIR_JOB_S;
+                break;
+            default:
+                cpair = COLOR_PAIR_JOB_OTHER;
+                break;
+            }
+
+            if (!pre_state) {
+                // Test for "badness"
+                double cpuutil_min = 0.6, cpuutil_max = 1.25;
+                if (cpuutil < cpuutil_min || cpuutil > cpuutil_max ||
+                    (memutil > 0 && memutil < 0.5)) {
+                    cpair = COLOR_PAIR_JOB_BAD;
+                }
+            }
+
+            int cattrs = COLOR_PAIR(cpair);
+            if (i == selpos + HEADER_NROWS) {
+                cattrs |= A_REVERSE;
+            }
+
+            wattron(win, cattrs);
+
+            sprintf(linebuf,
+                "%8s %9s    %c  %6d %8.1f  %5.0f %7d  %5.0f   %8s %6.1f",
+                current_user, current_queue, current_state, njobs_sum,
+                mem_sum/gb_scale, 100*memutil, ncpus_sum,
+                100*cpuutil, timebuf, io_sum);
+
+            linebuf[1023] = '\0';
+
+            mvwprintw(win, i, 0, "%s", linebuf);
+
+            wattroff(win, cattrs);
+
+            // reset the stats
+            mem_r_sum     = 0.0;
+            mem_sum       = 0.0;
+            cput_sum      = 0;
+            walltime_sum  = 0;
+            ncpus_sum     = 0;
+            io_sum        = 0.0;
+            njobs_sum     = 0;
+            nwalltime_sum = 0;
+            current_user  = job->user;
+            current_state = job->state;
+            current_queue = job->queue;
+
+            i++;
+        }
+
+        mem_r_sum    += mem_r;
+        mem_sum      += mem;
+        cput_sum     += cput;
+        walltime_sum += walltime;
+        ncpus_sum    += ncpus;
+        io_sum       += io;
+        njobs_sum++;
+
+        nwalltime_sum += ncpus*walltime;
+
+        nj++;
+        if (nj < njobs) {
+            job++;
+        }
+    }
+
+    wclrtobot(win);
+
+    return i - HEADER_NROWS;
 }
 
 static int state_rank(job_state_t s)
@@ -972,6 +1158,7 @@ static void usage(const char *arg0, FILE *out)
     fprintf(out, "  -H <hours>    history span for finished jobs [%d]\n",
         DEFAULT_HISTORY);
     fprintf(out, "  -S            include array subjobs\n");
+    fprintf(out, "  -a            run in the aggregate (summary) mode (implies -S)\n");
     fprintf(out, "  -R <secs>     refresh period [%d]\n", refresh_period);
     fprintf(out, "  -C            start in monochrome mode\n");
     fprintf(out, "  -V            print version info and exit\n");
@@ -997,6 +1184,8 @@ int main(int argc, char * const argv[])
     int history_span = DEFAULT_HISTORY;
     bool bw = false;
 
+    qtop_mode_t mode = QTOP_MODE_JOBS;
+
     int uid = getuid();
     if (uid != 0) {
         struct passwd *p = getpwuid(uid);
@@ -1007,7 +1196,7 @@ int main(int argc, char * const argv[])
 
     int opt;
 
-    while ((opt = getopt(argc, argv, "u:q:s:e:fFH:R:SCVh")) != -1) {
+    while ((opt = getopt(argc, argv, "u:q:s:e:fFH:R:SaCVh")) != -1) {
         switch (opt) {
         case 'u':
             if (strcmp(optarg, "all")) {
@@ -1034,6 +1223,10 @@ int main(int argc, char * const argv[])
             break;
         case 'H':
             history_span = atoi(optarg);
+            break;
+        case 'a':
+            mode = QTOP_MODE_SUMMARY;
+            subjobs = true;
             break;
         case 'R':
             refresh_period = atoi(optarg);
@@ -1116,11 +1309,11 @@ int main(int argc, char * const argv[])
         alarm(refresh_period);
     }
 
-    bool job_details = false;
     bool first_time = true;
     int ch = 0;
     int jid_start = 0;
     int selpos = 0;
+    int nsummaries = 0;
     unsigned int xshift = 0, yshift = 0;
     unsigned int joblist_xshift = 0;
     unsigned int ajob_id_expanded = 0;
@@ -1132,7 +1325,7 @@ int main(int argc, char * const argv[])
         
         switch (ch) {
         case KEY_UP:
-            if (job_details) {
+            if (mode == QTOP_MODE_DETAIL) {
                 if (yshift > 0) {
                     yshift--;
                 }
@@ -1141,7 +1334,7 @@ int main(int argc, char * const argv[])
             }
             break;
         case KEY_DOWN:
-            if (job_details) {
+            if (mode == QTOP_MODE_DETAIL) {
                 yshift++;
             } else {
                 selpos++;
@@ -1154,7 +1347,7 @@ int main(int argc, char * const argv[])
             selpos--;
             break;
         case KEY_LEFT:
-            if (job_details) {
+            if (mode == QTOP_MODE_DETAIL) {
                 if (xshift > 0) {
                     xshift--;
                 }
@@ -1165,7 +1358,7 @@ int main(int argc, char * const argv[])
             }
             break;
         case KEY_RIGHT:
-            if (job_details) {
+            if (mode == QTOP_MODE_DETAIL) {
                 xshift++;
             } else {
                 joblist_xshift++;
@@ -1191,21 +1384,27 @@ int main(int argc, char * const argv[])
         case '\n':
         case '\r':
         case KEY_ENTER:
-            job_details = !job_details;
+            if (mode == QTOP_MODE_JOBS) {
+                mode = QTOP_MODE_DETAIL;
+            }
             break;
         case ' ':
-            ajob = get_job(jobs, njobs, jid_start + selpos);
-            if (ajob && ajob->is_array) {
-                need_update = true;
-                if (ajob_id_expanded == ajob->id) {
-                    ajob_id_expanded = 0;
-                } else {
-                    ajob_id_expanded = ajob->id;
+            if (mode == QTOP_MODE_JOBS) {
+                ajob = get_job(jobs, njobs, jid_start + selpos);
+                if (ajob && ajob->is_array) {
+                    need_update = true;
+                    if (ajob_id_expanded == ajob->id) {
+                        ajob_id_expanded = 0;
+                    } else {
+                        ajob_id_expanded = ajob->id;
+                    }
                 }
             }
             break;
         case 27:
-            job_details = false;
+            if (mode == QTOP_MODE_DETAIL) {
+                mode = QTOP_MODE_JOBS;
+            }
             break;
         case KEY_RESIZE:
             delwin(qtop->jwin);
@@ -1221,7 +1420,7 @@ int main(int argc, char * const argv[])
             need_joblist_refresh = true;
         }
 
-        if (need_update && !job_details) {
+        if (need_update && mode != QTOP_MODE_DETAIL) {
             need_update = false;
             need_joblist_refresh = true;
             
@@ -1268,25 +1467,36 @@ int main(int argc, char * const argv[])
         // If there are no jobs selected, ignore the request to show details
         // of any
         if (!njobs) {
-            job_details = false;
+            mode = QTOP_MODE_JOBS;
         }
 
-        if (!job_details && need_joblist_refresh) {
+        if (mode == QTOP_MODE_JOBS && need_joblist_refresh) {
             werase(stdscr);
         }
 
         print_server_stats(pbs, stdscr);
 
-        if (job_details) {
+        switch (mode) {
+        case QTOP_MODE_DETAIL:
             print_job_details(qtop, get_job(jobs, njobs, jid_start + selpos),
                 xshift, yshift);
-        } else {
+            break;
+        case QTOP_MODE_SUMMARY:
+            if (nsummaries > 0 && selpos >= nsummaries) {
+                selpos = nsummaries - 1;
+            }
+            if (need_joblist_refresh) {
+                nsummaries = print_jobs_summary(jobs, njobs, stdscr, selpos);
+            }
+            break;
+        default:
             xshift = 0;
             yshift = 0;
             if (need_joblist_refresh) {
                 print_jobs(jobs + jid_start, njobs - jid_start, stdscr, selpos,
                     joblist_xshift);
             }
+            break;
         }
     } while ((ch = getch()) != 'q');
 

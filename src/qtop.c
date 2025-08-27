@@ -841,6 +841,7 @@ void print_jobs(const job_t *jobs, int njobs, WINDOW *win, int selpos,
         job++;
     }
 
+    wclrtobot(win);
     wrefresh(win);
 }
 
@@ -1022,6 +1023,7 @@ static int print_jobs_summary(const job_t *jobs, int njobs,
     }
 
     wclrtobot(win);
+    wrefresh(win);
 
     return i - HEADER_NROWS;
 }
@@ -1468,10 +1470,6 @@ int main(int argc, char * const argv[])
         // of any
         if (!njobs) {
             mode = QTOP_MODE_JOBS;
-        }
-
-        if (mode == QTOP_MODE_JOBS && need_joblist_refresh) {
-            werase(stdscr);
         }
 
         print_server_stats(pbs, stdscr);

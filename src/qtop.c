@@ -963,10 +963,23 @@ static int print_jobs_summary(const job_t *jobs, int njobs,
             }
 
             if (!pre_state) {
+                double ncpus_avg = (double) ncpus_sum/njobs_sum;
+                double io_avg = (double) io_sum/njobs_sum;
+                double mem_avg = (double) mem_sum/njobs_sum;
+
+                double cpuutil_min, cpuutil_max = 1.25;
+                if (io_avg >= 1.0) {
+                    cpuutil_min = 0.0;
+                } else
+                if (ncpus_avg >= 2.0) {
+                    cpuutil_min = 1 - 1/ncpus_avg;
+                } else {
+                    cpuutil_min = 0.9;
+                }
+
                 // Test for "badness"
-                double cpuutil_min = 0.6, cpuutil_max = 1.25;
                 if (cpuutil < cpuutil_min || cpuutil > cpuutil_max ||
-                    (memutil > 0 && memutil < 0.5)) {
+                    (memutil > 0 && memutil < 0.5 && mem_avg > 2.0)) {
                     cpair = COLOR_PAIR_JOB_BAD;
                 }
             }

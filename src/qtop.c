@@ -595,7 +595,7 @@ job_t *qtop_server_jobs(qtop_t *q, int *njobs, int ajob_id_expanded)
     return jobs;
 }
 
-void print_server_stats(const server_t *pbs, WINDOW *win)
+void print_server_stats(const server_t *pbs, WINDOW *win, bool paused)
 {
     const double gb_scale = pow(2, 20);
 
@@ -626,7 +626,7 @@ void print_server_stats(const server_t *pbs, WINDOW *win)
         "Mem: %.1f GiB, VMem: %.1f GiB, Cores: %d (SP:%d + MP:%d)",
         pbs->mem/gb_scale, pbs->vmem/gb_scale, pbs->ncpus,
         pbs->ncpus - pbs->mpiprocs, pbs->mpiprocs);
-    mvwprintw(win, 1, x - 8, "%s", datebuf);
+    mvwprintw(win, 1, x - 9, "%c%s", paused? 'P':' ', datebuf);
 
     wattroff(win, COLOR_PAIR(COLOR_PAIR_HEADER));
     wrefresh(win);
@@ -1146,6 +1146,7 @@ static job_t *get_job(job_t *jobs, int njobs, int jid)
 }
 
 static int refresh_period = DEFAULT_REFRESH;
+static bool paused = false;
 
 volatile sig_atomic_t need_update = false;
 void catch_alarm(int sig)
@@ -1154,7 +1155,9 @@ void catch_alarm(int sig)
         return;
     }
 
-    need_update = true;
+    if (!paused) {
+        need_update = true;
+    }
     if (refresh_period) {
         alarm(refresh_period);
     }
@@ -1361,6 +1364,9 @@ int main(int argc, char * const argv[])
         case 'k':
             selpos--;
             break;
+        case 'p':
+            paused = !paused;
+            break;
         case KEY_LEFT:
             if (mode == QTOP_MODE_DETAIL) {
                 if (xshift > 0) {
@@ -1485,7 +1491,9 @@ int main(int argc, char * const argv[])
             mode = QTOP_MODE_JOBS;
         }
 
-        print_server_stats(pbs, stdscr);
+        if (!paused || need_joblist_refresh) {
+            print_server_stats(pbs, stdscr, paused);
+        }
 
         switch (mode) {
         case QTOP_MODE_DETAIL:
